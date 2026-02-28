@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "eu.ansvar/panamanian-law-mcp",
+  "description": "Panama legislation via MCP -- full-text search across statutes and provisions",
+  "repository": {
+    "url": "https://github.com/Ansvar-Systems/Panamanian-law-mcp",
+    "source": "github"
+  },
+  "homepage": "https://ansvar.eu",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "keywords": [
+    "panamanian-law",
+    "panamanian",
+    "legal",
+    "compliance",
+    "mcp"
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@ansvar/panamanian-law-mcp",
+      "version": "1.0.0",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "npm",
+      "identifier": "@ansvar/panamanian-law-mcp",
+      "version": "1.0.0",
+      "transport": {
+        "type": "streamable-http",
+        "url": "https://panamanian-law-mcp.vercel.app/mcp"
+      }
+    }
+  ]
+}
