@@ -1,21 +1,28 @@
 #!/usr/bin/env tsx
 /**
- * Dominican Republic Law MCP -- Census Script
+ * Panamanian Law MCP -- Census Script
  *
- * Scrapes consultoria.gov.do to enumerate ALL laws.
- * Uses the ASP.NET MVC search form with CSRF token protection.
+ * Scrapes panama.justia.com to enumerate federal laws, codes, decrees,
+ * executive decrees, cabinet decrees, decree-laws, regulations, and agreements.
  *
  * Pipeline:
- *   1. GET the main page to obtain session cookie + CSRF token
- *   2. POST search with DocumentTypeCode=1 (Leyes) to get all laws
- *   3. Parse HTML table response for law entries
- *   4. Write data/census.json
+ *   1. Fetch /federales/leyes/             (federal laws)
+ *   2. Fetch /federales/codigos/           (codes)
+ *   3. Fetch /federales/decretos/          (decrees)
+ *   4. Fetch /federales/decretos-ejecutivos/ (executive decrees)
+ *   5. Fetch /federales/decretos-de-gabinete/ (cabinet decrees)
+ *   6. Fetch /federales/decretos-leyes/    (decree-laws)
+ *   7. Fetch /federales/reglamentos/       (regulations)
+ *   8. Fetch /federales/acuerdos/          (agreements)
+ *   9. Deduplicate and write data/census.json
  *
- * Source: https://www.consultoria.gov.do/consulta/
+ * Sources:
+ *   - Primary: https://panama.justia.com/federales/leyes/
+ *   - Plus 7 additional category pages (see above)
  *
  * Usage:
  *   npx tsx scripts/census.ts
- *   npx tsx scripts/census.ts --limit 100
+ *   npx tsx scripts/census.ts --limit 50
  */
 
 import * as fs from 'fs';
@@ -28,127 +35,65 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '../data');
 const CENSUS_PATH = path.join(DATA_DIR, 'census.json');
 
-const BASE_URL = 'https://www.consultoria.gov.do';
-const MAIN_URL = `${BASE_URL}/consulta/`;
-const SEARCH_URL = `${BASE_URL}/Consulta/Home/Search?Length=7`;
+const JUSTIA_BASE = 'https://panama.justia.com';
 
-const USER_AGENT = 'dominican-law-mcp/1.0 (census; https://github.com/Ansvar-Systems/dominican-law-mcp)';
+const USER_AGENT =
+  'panamanian-law-mcp/1.0 (https://github.com/Ansvar-Systems/Panamanian-law-mcp; hello@ansvar.ai)';
+
+const MIN_DELAY_MS = 500;
 
 /* ---------- Types ---------- */
 
 interface RawLawEntry {
-  tipo: string;
-  numero: string;
-  titulo: string;
-  gaceta: string;
-  fecha: string;
-  documentId: string;
-  downloadUrl: string;
+  title: string;
+  url: string;
+  slug: string;
+  category: string;
+  date: string;
+  source: 'justia';
 }
 
 /* ---------- HTTP Helpers ---------- */
 
-/**
- * Fetch the main page to get session cookies and CSRF token.
- */
-async function getSessionAndToken(): Promise<{ cookies: string; token: string }> {
-  const response = await fetch(MAIN_URL, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Accept': 'text/html',
-    },
-    redirect: 'follow',
-  });
+let lastRequestTime = 0;
 
-  if (response.status !== 200) {
-    throw new Error(`Failed to load main page: HTTP ${response.status}`);
+async function rateLimit(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastRequestTime;
+  if (elapsed < MIN_DELAY_MS) {
+    await new Promise(resolve => setTimeout(resolve, MIN_DELAY_MS - elapsed));
   }
-
-  // Extract cookies from response
-  const setCookies = response.headers.getSetCookie?.() ?? [];
-  const cookieHeader = setCookies
-    .map(c => c.split(';')[0])
-    .join('; ');
-
-  const html = await response.text();
-
-  // Extract CSRF token
-  const tokenMatch = html.match(/name="__RequestVerificationToken"[^>]*value="([^"]*)"/);
-  if (!tokenMatch) {
-    throw new Error('Failed to extract CSRF token from main page');
-  }
-
-  return { cookies: cookieHeader, token: tokenMatch[1] };
+  lastRequestTime = Date.now();
 }
 
-/**
- * Search for all laws using the ASP.NET MVC form.
- */
-async function searchLaws(cookies: string, token: string): Promise<string> {
-  const body = new URLSearchParams({
-    __RequestVerificationToken: token,
-    DocumentTypeCode: '1', // Leyes
-    DocumentCategory: '0',
-  });
+async function fetchPage(url: string): Promise<string> {
+  await rateLimit();
 
-  const response = await fetch(SEARCH_URL, {
-    method: 'POST',
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'X-Requested-With': 'XMLHttpRequest',
-      'Accept': '*/*',
-      'Origin': BASE_URL,
-      'Referer': MAIN_URL,
-      'Cookie': cookies,
-    },
-    body: body.toString(),
-    redirect: 'follow',
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
 
-  if (response.status !== 200) {
-    throw new Error(`Search request failed: HTTP ${response.status}`);
-  }
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html, */*',
+        'Accept-Language': 'es-PA,es;q=0.9,en;q=0.5',
+      },
+      redirect: 'follow',
+      signal: controller.signal,
+    });
 
-  return response.text();
-}
-
-/* ---------- Parsing ---------- */
-
-function parseSearchResults(html: string): RawLawEntry[] {
-  const entries: RawLawEntry[] = [];
-
-  // Match table rows with 6 cells
-  const rowRe = /<tr>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<\/tr>/gi;
-  let match: RegExpExecArray | null;
-
-  while ((match = rowRe.exec(html)) !== null) {
-    const tipo = stripTags(match[1]).trim();
-    const numero = stripTags(match[2]).trim();
-    const titulo = decodeEntities(stripTags(match[3]).trim());
-    const gaceta = stripTags(match[4]).trim();
-    const fecha = stripTags(match[5]).trim();
-    const opciones = match[6];
-
-    // Extract documentId from link
-    const docIdMatch = opciones.match(/documentId=(\d+)/);
-    const documentId = docIdMatch ? docIdMatch[1] : '';
-
-    if (documentId && titulo) {
-      entries.push({
-        tipo,
-        numero,
-        titulo,
-        gaceta,
-        fecha,
-        documentId,
-        downloadUrl: `${BASE_URL}/Consulta/Home/FileManagement?documentId=${documentId}&managementType=1`,
-      });
+    if (response.status !== 200) {
+      throw new Error(`HTTP ${response.status} for ${url}`);
     }
-  }
 
-  return entries;
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
 }
+
+/* ---------- Parsing Helpers ---------- */
 
 function stripTags(text: string): string {
   return text.replace(/<[^>]*>/g, '');
@@ -156,17 +101,24 @@ function stripTags(text: string): string {
 
 function decodeEntities(text: string): string {
   return text
-    .replace(/&#209;/g, 'Ñ').replace(/&#241;/g, 'ñ')
-    .replace(/&#193;/g, 'Á').replace(/&#225;/g, 'á')
-    .replace(/&#201;/g, 'É').replace(/&#233;/g, 'é')
-    .replace(/&#205;/g, 'Í').replace(/&#237;/g, 'í')
-    .replace(/&#211;/g, 'Ó').replace(/&#243;/g, 'ó')
-    .replace(/&#218;/g, 'Ú').replace(/&#250;/g, 'ú')
-    .replace(/&#252;/g, 'ü').replace(/&#220;/g, 'Ü')
+    .replace(/&#209;/g, 'N').replace(/&#241;/g, 'n')
+    .replace(/&#193;/g, 'A').replace(/&#225;/g, 'a')
+    .replace(/&#201;/g, 'E').replace(/&#233;/g, 'e')
+    .replace(/&#205;/g, 'I').replace(/&#237;/g, 'i')
+    .replace(/&#211;/g, 'O').replace(/&#243;/g, 'o')
+    .replace(/&#218;/g, 'U').replace(/&#250;/g, 'u')
+    .replace(/&#252;/g, 'u').replace(/&#220;/g, 'U')
+    .replace(/&aacute;/g, 'a').replace(/&eacute;/g, 'e')
+    .replace(/&iacute;/g, 'i').replace(/&oacute;/g, 'o')
+    .replace(/&uacute;/g, 'u').replace(/&ntilde;/g, 'n')
+    .replace(/&Aacute;/g, 'A').replace(/&Eacute;/g, 'E')
+    .replace(/&Iacute;/g, 'I').replace(/&Oacute;/g, 'O')
+    .replace(/&Uacute;/g, 'U').replace(/&Ntilde;/g, 'N')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, ' ')
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n)));
 }
 
@@ -177,17 +129,7 @@ function slugify(text: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .substring(0, 50);
-}
-
-function parseDRDate(dateStr: string): string {
-  // Format: "30/09/1920"
-  const match = dateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (match) {
-    const [, day, month, year] = match;
-    return `${year}-${month!.padStart(2, '0')}-${day!.padStart(2, '0')}`;
-  }
-  return '';
+    .substring(0, 60);
 }
 
 function parseArgs(): { limit: number | null } {
@@ -204,75 +146,172 @@ function parseArgs(): { limit: number | null } {
   return { limit };
 }
 
+/* ---------- Justia Parsing ---------- */
+
+/**
+ * Justia category pages list laws as anchor tags:
+ *   <a href="/federales/leyes/{slug}/">{Title}</a>
+ *   <a href="/federales/codigos/{slug}/">{Title}</a>
+ *   <a href="/federales/decretos/{slug}/">{Title}</a>
+ *   etc.
+ *
+ * The listing pages show all entries on a single page (no pagination).
+ */
+function parseJustiaListingPage(
+  html: string,
+  sectionPath: string,
+  category: string,
+): RawLawEntry[] {
+  const entries: RawLawEntry[] = [];
+  const seen = new Set<string>();
+
+  const escapedPath = sectionPath.replace(/\//g, '\\/');
+  const linkRe = new RegExp(
+    `<a\\s[^>]*href=["'](${escapedPath}([^"'/]+)(?:\\/[^"']*)?)["'][^>]*>([\\s\\S]*?)<\\/a>`,
+    'gi',
+  );
+  let match: RegExpExecArray | null;
+
+  while ((match = linkRe.exec(html)) !== null) {
+    const href = match[1];
+    const slug = match[2];
+    const rawTitle = stripTags(match[3]).trim();
+
+    if (!rawTitle || rawTitle.length < 5) continue;
+    if (!slug || slug.length < 2) continue;
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+
+    const title = decodeEntities(rawTitle);
+    const url = `${JUSTIA_BASE}${href}`;
+
+    entries.push({
+      title,
+      url,
+      slug,
+      category,
+      date: '',
+      source: 'justia',
+    });
+  }
+
+  return entries;
+}
+
+/**
+ * Fetch all Justia category pages and combine results.
+ */
+async function censusFromJustia(limit: number | null): Promise<RawLawEntry[]> {
+  const allEntries: RawLawEntry[] = [];
+
+  const categories: Array<{ path: string; label: string; category: string }> = [
+    { path: '/federales/leyes/', label: 'Federal Laws', category: 'leyes' },
+    { path: '/federales/codigos/', label: 'Codes', category: 'codigos' },
+    { path: '/federales/decretos/', label: 'Decrees', category: 'decretos' },
+    { path: '/federales/decretos-ejecutivos/', label: 'Executive Decrees', category: 'decretos-ejecutivos' },
+    { path: '/federales/decretos-de-gabinete/', label: 'Cabinet Decrees', category: 'decretos-de-gabinete' },
+    { path: '/federales/decretos-leyes/', label: 'Decree-Laws', category: 'decretos-leyes' },
+    { path: '/federales/reglamentos/', label: 'Regulations', category: 'reglamentos' },
+    { path: '/federales/acuerdos/', label: 'Agreements', category: 'acuerdos' },
+  ];
+
+  for (const { path: sectionPath, label, category } of categories) {
+    const url = `${JUSTIA_BASE}${sectionPath}`;
+    process.stdout.write(`  Fetching ${label} (${url})... `);
+
+    try {
+      const html = await fetchPage(url);
+      const entries = parseJustiaListingPage(html, sectionPath, category);
+      allEntries.push(...entries);
+      console.log(`${entries.length} entries`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`FAILED: ${msg}`);
+    }
+
+    if (limit && allEntries.length >= limit) break;
+  }
+
+  return allEntries;
+}
+
 /* ---------- Main ---------- */
 
 async function main(): Promise<void> {
   const { limit } = parseArgs();
 
-  console.log('Dominican Republic Law MCP -- Census');
-  console.log('=====================================\n');
-  console.log('  Source: consultoria.gov.do/consulta/');
-  console.log('  Method: ASP.NET MVC search form (POST with CSRF token)');
+  console.log('Panamanian Law MCP -- Census');
+  console.log('============================\n');
+  console.log('  Primary: panama.justia.com/federales/ (8 categories)');
+  console.log('  Categories: leyes, codigos, decretos, decretos-ejecutivos,');
+  console.log('              decretos-de-gabinete, decretos-leyes, reglamentos, acuerdos');
   if (limit) console.log(`  --limit ${limit}`);
   console.log('');
 
   fs.mkdirSync(DATA_DIR, { recursive: true });
 
-  // Step 1: Get session + CSRF token
-  process.stdout.write('  Getting session and CSRF token... ');
-  const { cookies, token } = await getSessionAndToken();
-  console.log('OK');
+  // Step 1: Primary source -- Justia
+  console.log('[1/1] Justia (primary)\n');
+  let allEntries = await censusFromJustia(limit);
+  console.log(`\n  Justia total: ${allEntries.length} entries\n`);
 
-  // Step 2: Search for all laws
-  process.stdout.write('  Searching for all laws (DocumentTypeCode=1)... ');
-  const searchHtml = await searchLaws(cookies, token);
-  console.log(`OK (${(searchHtml.length / 1024).toFixed(0)} KB response)`);
+  // Deduplicate by slug
+  const deduped = new Map<string, RawLawEntry>();
+  for (const entry of allEntries) {
+    const key = entry.slug || slugify(entry.title);
+    if (!deduped.has(key)) {
+      deduped.set(key, entry);
+    }
+  }
+  allEntries = Array.from(deduped.values());
 
-  // Step 3: Parse results
-  process.stdout.write('  Parsing search results... ');
-  const rawEntries = parseSearchResults(searchHtml);
-  console.log(`${rawEntries.length} laws found`);
+  // Apply limit
+  if (limit && allEntries.length > limit) {
+    allEntries = allEntries.slice(0, limit);
+  }
 
   // Build census entries
-  const laws = rawEntries
-    .slice(0, limit ?? rawEntries.length)
-    .map((entry, idx) => {
-      const date = parseDRDate(entry.fecha);
-      const id = `do-ley-${entry.numero || idx}-${slugify(entry.titulo).substring(0, 30)}`;
+  const laws = allEntries.map((entry) => {
+    const id = `pa-${entry.category}-${slugify(entry.title).substring(0, 50)}`;
 
-      return {
-        id,
-        title: entry.titulo,
-        identifier: entry.numero ? `Ley No. ${entry.numero}` : entry.titulo,
-        url: entry.downloadUrl,
-        status: 'in_force' as const,
-        category: 'act' as const,
-        classification: entry.downloadUrl ? 'ingestable' as const : 'inaccessible' as const,
-        ingested: false,
-        provision_count: 0,
-        ingestion_date: null as string | null,
-        issued_date: date,
-        gaceta: entry.gaceta,
-        document_id: entry.documentId,
-      };
-    });
+    return {
+      id,
+      title: entry.title,
+      identifier: entry.title,
+      url: entry.url,
+      status: 'in_force' as const,
+      category: mapCategory(entry.category),
+      classification: 'ingestable' as const,
+      ingested: false,
+      provision_count: 0,
+      ingestion_date: null as string | null,
+      issued_date: entry.date || '',
+      portal_slug: entry.slug,
+    };
+  });
 
   const ingestable = laws.filter(l => l.classification === 'ingestable').length;
   const inaccessible = laws.filter(l => l.classification === 'inaccessible').length;
 
+  const byCategoryCount: Record<string, number> = {};
+  for (const entry of allEntries) {
+    byCategoryCount[entry.category] = (byCategoryCount[entry.category] ?? 0) + 1;
+  }
+
   const census = {
     schema_version: '2.0',
-    jurisdiction: 'DO',
-    jurisdiction_name: 'Dominican Republic',
-    portal: 'consultoria.gov.do',
+    jurisdiction: 'PA',
+    jurisdiction_name: 'Panama',
+    portal: 'panama.justia.com',
     census_date: new Date().toISOString().split('T')[0],
-    agent: 'dominican-law-mcp/census.ts',
+    agent: 'panamanian-law-mcp/census.ts',
     summary: {
       total_laws: laws.length,
       ingestable,
       ocr_needed: 0,
       inaccessible,
       excluded: 0,
+      by_category: byCategoryCount,
     },
     laws,
   };
@@ -282,10 +321,28 @@ async function main(): Promise<void> {
   console.log('\n==================================================');
   console.log('CENSUS COMPLETE');
   console.log('==================================================');
-  console.log(`  Total laws discovered:  ${laws.length}`);
-  console.log(`  Ingestable:             ${ingestable}`);
-  console.log(`  Inaccessible:           ${inaccessible}`);
+  console.log(`  Portal:          panama.justia.com`);
+  console.log(`  Total laws:      ${laws.length}`);
+  console.log(`  Ingestable:      ${ingestable}`);
+  console.log(`  Inaccessible:    ${inaccessible}`);
+  console.log(`\n  By category:`);
+  for (const [cat, count] of Object.entries(byCategoryCount)) {
+    console.log(`    ${cat}: ${count}`);
+  }
   console.log(`\n  Output: ${CENSUS_PATH}`);
+}
+
+function mapCategory(category: string): 'act' | 'code' | 'decree' | 'regulation' | 'agreement' {
+  switch (category) {
+    case 'codigos': return 'code';
+    case 'decretos':
+    case 'decretos-ejecutivos':
+    case 'decretos-de-gabinete':
+    case 'decretos-leyes': return 'decree';
+    case 'reglamentos': return 'regulation';
+    case 'acuerdos': return 'agreement';
+    default: return 'act';
+  }
 }
 
 main().catch(error => {
