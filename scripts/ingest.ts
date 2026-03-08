@@ -3,6 +3,7 @@
  * Panamanian Law MCP -- Census-Driven Ingestion Pipeline
  *
  * Reads data/census.json and fetches + parses every ingestable law
+<<<<<<< HEAD
  * from panama.justia.com (HTML full-text pages).
  *
  * Pipeline per law:
@@ -10,27 +11,50 @@
  *   2. Extract law text from the page body
  *   3. Parse articles, definitions, chapter structure (Spanish civil law)
  *   4. Write seed JSON for build-db.ts
+=======
+ * from panama.justia.com (HTML full text).
+ *
+ * Pipeline per law:
+ *   1. Fetch HTML page for the individual law
+ *   2. Parse articles, definitions, chapter structure (no PDF extraction)
+ *   3. Write seed JSON for build-db.ts
+>>>>>>> origin/dev
  *
  * Features:
  *   - Resume support: skips laws that already have a seed JSON file
  *   - Census update: writes provision counts + ingestion dates back to census.json
+<<<<<<< HEAD
  *   - Checkpoint: saves census every 50 laws
  *   - Rate limiting: 500ms minimum between requests
+=======
+ *   - Rate limiting: 300ms minimum between requests
+ *   - Checkpoint: saves census every 50 laws
+>>>>>>> origin/dev
  *
  * Usage:
  *   npm run ingest                    # Full census-driven ingestion
  *   npm run ingest -- --limit 5       # Test with 5 laws
  *   npm run ingest -- --force         # Re-ingest even if seed exists
+ *   npm run ingest -- --resume        # (default) Skip already-ingested laws
  *
  * Data source: panama.justia.com
+<<<<<<< HEAD
  * Format: HTML (full-text law pages)
  * Language: Spanish
+=======
+ * Format: HTML (parsed directly, no PDF extraction needed)
+ * License: Government Open Data
+>>>>>>> origin/dev
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { parsePALawHtml, type ActIndexEntry, type ParsedAct } from './lib/parser.js';
+<<<<<<< HEAD
+=======
+import { fetchWithRateLimit } from './lib/fetcher.js';
+>>>>>>> origin/dev
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,9 +63,12 @@ const SOURCE_DIR = path.resolve(__dirname, '../data/source');
 const SEED_DIR = path.resolve(__dirname, '../data/seed');
 const CENSUS_PATH = path.resolve(__dirname, '../data/census.json');
 
+<<<<<<< HEAD
 const USER_AGENT = 'panamanian-law-mcp/1.0 (https://github.com/Ansvar-Systems/Panamanian-law-mcp; hello@ansvar.ai)';
 const MIN_DELAY_MS = 500;
 
+=======
+>>>>>>> origin/dev
 /* ---------- Types ---------- */
 
 interface CensusLawEntry {
@@ -50,13 +77,17 @@ interface CensusLawEntry {
   identifier: string;
   url: string;
   status: 'in_force' | 'amended' | 'repealed';
-  category: 'act';
+  category: string;
   classification: 'ingestable' | 'excluded' | 'inaccessible';
   ingested: boolean;
   provision_count: number;
   ingestion_date: string | null;
   issued_date?: string;
+<<<<<<< HEAD
   norm_type?: string;
+=======
+  portal_slug?: string;
+>>>>>>> origin/dev
 }
 
 interface CensusFile {
@@ -110,6 +141,7 @@ function censusToActEntry(law: CensusLawEntry): ActIndexEntry {
   };
 }
 
+<<<<<<< HEAD
 /**
  * Fetch the HTML content of a Justia law page.
  * Extracts the main content body (between article/main tags or the main content div).
@@ -157,6 +189,27 @@ async function fetchLawHtml(url: string): Promise<string | null> {
   } catch (err) {
     console.log(` Error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
+=======
+async function fetchLawHtml(url: string): Promise<{ ok: boolean; html: string; size: number }> {
+  try {
+    const result = await fetchWithRateLimit(url);
+
+    if (result.status !== 200) {
+      console.log(` HTTP ${result.status}`);
+      return { ok: false, html: '', size: 0 };
+    }
+
+    if (result.body.length < 200) {
+      console.log(' Response too small');
+      return { ok: false, html: '', size: 0 };
+    }
+
+    return { ok: true, html: result.body, size: result.body.length };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(` Error: ${msg}`);
+    return { ok: false, html: '', size: 0 };
+>>>>>>> origin/dev
   }
 }
 
@@ -183,8 +236,13 @@ async function main(): Promise<void> {
   console.log('Panamanian Law MCP -- Ingestion Pipeline (Census-Driven)');
   console.log('========================================================\n');
   console.log('  Source: panama.justia.com');
+<<<<<<< HEAD
   console.log('  Format: HTML (full-text law pages)');
   console.log('  Language: Spanish');
+=======
+  console.log('  Format: HTML (parsed directly, no PDF extraction)');
+  console.log('  License: Government Open Data');
+>>>>>>> origin/dev
 
   if (limit) console.log(`  --limit ${limit}`);
   if (force) console.log(`  --force (re-ingest all)`);
@@ -224,7 +282,6 @@ async function main(): Promise<void> {
     const sourceFile = path.join(SOURCE_DIR, `${act.id}.html`);
     const seedFile = path.join(SEED_DIR, `${act.id}.json`);
 
-    // Resume support
     if (!force && fs.existsSync(seedFile)) {
       try {
         const existing = JSON.parse(fs.readFileSync(seedFile, 'utf-8')) as ParsedAct;
@@ -249,6 +306,7 @@ async function main(): Promise<void> {
     }
 
     try {
+<<<<<<< HEAD
       // Fetch HTML
       let htmlContent: string | null = null;
 
@@ -262,11 +320,27 @@ async function main(): Promise<void> {
         if (!htmlContent || htmlContent.trim().length < 100) {
           const entry = censusMap.get(law.id);
           if (entry) entry.classification = 'inaccessible';
+=======
+      let html: string;
+
+      if (fs.existsSync(sourceFile) && !force) {
+        html = fs.readFileSync(sourceFile, 'utf-8');
+        const size = Buffer.byteLength(html);
+        console.log(`  [${processed + 1}/${acts.length}] Using cached ${act.id} (${(size / 1024).toFixed(0)} KB)`);
+      } else {
+        process.stdout.write(`  [${processed + 1}/${acts.length}] Fetching ${act.id}...`);
+        const result = await fetchLawHtml(act.url);
+        if (!result.ok) {
+          const entry = censusMap.get(law.id);
+          if (entry) entry.classification = 'inaccessible';
+          results.push({ act: act.shortName, provisions: 0, definitions: 0, status: 'fetch-failed' });
+>>>>>>> origin/dev
           failed++;
           processed++;
           continue;
         }
 
+<<<<<<< HEAD
         // Cache the HTML
         fs.writeFileSync(sourceFile, htmlContent);
         console.log(` OK (${(htmlContent.length / 1024).toFixed(0)} KB)`);
@@ -274,6 +348,14 @@ async function main(): Promise<void> {
 
       // Parse HTML
       const parsed = parsePALawHtml(htmlContent, act);
+=======
+        html = result.html;
+        fs.writeFileSync(sourceFile, html, 'utf-8');
+        console.log(` OK (${(result.size / 1024).toFixed(0)} KB)`);
+      }
+
+      const parsed = parsePALawHtml(html, act);
+>>>>>>> origin/dev
       fs.writeFileSync(seedFile, JSON.stringify(parsed, null, 2));
       totalProvisions += parsed.provisions.length;
       totalDefinitions += parsed.definitions.length;
@@ -313,6 +395,32 @@ async function main(): Promise<void> {
   console.log(`  Failed:      ${failed}`);
   console.log(`  Total provisions:  ${totalProvisions}`);
   console.log(`  Total definitions: ${totalDefinitions}`);
+<<<<<<< HEAD
+=======
+
+  const failures = results.filter(r => r.status.startsWith('fetch') || r.status.startsWith('ERROR'));
+  if (failures.length > 0) {
+    console.log(`\n  Failed laws:`);
+    for (const f of failures.slice(0, 30)) {
+      console.log(`    ${f.act}: ${f.status}`);
+    }
+    if (failures.length > 30) {
+      console.log(`    ... and ${failures.length - 30} more`);
+    }
+  }
+
+  const zeroProv = results.filter(r => r.provisions === 0 && r.status === 'OK');
+  if (zeroProv.length > 0) {
+    console.log(`\n  Zero-provision laws (${zeroProv.length}):`);
+    for (const z of zeroProv.slice(0, 20)) {
+      console.log(`    ${z.act}`);
+    }
+    if (zeroProv.length > 20) {
+      console.log(`    ... and ${zeroProv.length - 20} more`);
+    }
+  }
+
+>>>>>>> origin/dev
   console.log('');
 }
 

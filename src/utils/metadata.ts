@@ -1,5 +1,5 @@
 /**
- * Response metadata utilities for Dominican Republic Law MCP.
+ * Response metadata utilities for Panamanian Law MCP.
  */
 
 import type Database from '@ansvar/mcp-sqlite';
@@ -32,12 +32,12 @@ export function generateResponseMetadata(
   }
 
   return {
-    data_source: 'Dominican Republic Law (consultoria.gov.do) — National Council for Law Reporting',
-    jurisdiction: 'KE',
+    data_source: 'Asamblea Nacional / Gaceta Oficial / SINFO (asamblea.gob.pa) — Republic of Panama',
+    jurisdiction: 'PA',
     disclaimer:
-      'This data is sourced from Dominican Republic Law under Government Open Data principles. ' +
-      'The authoritative versions are in English. Swahili translations may be available for some documents. ' +
-      'Always verify with the official Dominican Republic Law portal (consultoria.gov.do).',
+      'This data is sourced from Panamanian official legal portals (Asamblea Nacional, Gaceta Oficial, SINFO). ' +
+      'The authoritative versions are in Spanish. ' +
+      'Always verify with the official Gaceta Oficial or SINFO portal (sfranciscoj.gob.pa).',
     freshness,
   };
 }

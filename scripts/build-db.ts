@@ -1,6 +1,10 @@
 #!/usr/bin/env tsx
 /**
+<<<<<<< HEAD
  * Database builder for Panama Law MCP server.
+=======
+ * Database builder for Panamanian Law MCP server.
+>>>>>>> origin/dev
  *
  * Builds the SQLite database from seed JSON files in data/seed/.
  * Follows the Switzerland Law MCP reference pattern.
@@ -302,7 +306,11 @@ function extractEuReferences(text: string): ExtractedEUReference[] {
 }
 
 function buildDatabase(): void {
+<<<<<<< HEAD
   console.log('Building Panama Law MCP database...\n');
+=======
+  console.log('Building Panamanian Law MCP database...\n');
+>>>>>>> origin/dev
 
   if (fs.existsSync(DB_PATH)) {
     fs.unlinkSync(DB_PATH);
